@@ -24,33 +24,78 @@ namespace til // Terminal Implementation Library. Also: "Today I Learned"
         }
         return str;
     }
+    // The same as the above, but it doesn't visualize BS nor SPC.
+    _TIL_INLINEPREFIX std::wstring visualize_nonspace_control_codes(std::wstring str) noexcept
+    {
+        for (auto& ch : str)
+        {
+            // NOT backspace!
+            if (ch < 0x20 && ch != 0x08)
+            {
+                ch += 0x2400;
+            }
+            // NOT space
+            else if (ch == 0x7f)
+            {
+                ch = 0x2421; // replace del with ␡
+            }
+        }
+        return str;
+    }
 
     _TIL_INLINEPREFIX std::wstring visualize_control_codes(std::wstring_view str)
     {
         return visualize_control_codes(std::wstring{ str });
     }
 
-    _TIL_INLINEPREFIX std::wstring clean_filename(std::wstring str) noexcept
+    namespace details
     {
-        static constexpr std::array<bool, 128> filter{ {
+        inline constexpr uint8_t __ = 0b00;
+        inline constexpr uint8_t F_ = 0b10; // stripped in clean_filename
+        inline constexpr uint8_t _P = 0b01; // stripped in clean_path
+        inline constexpr uint8_t FP = 0b11; // stripped in clean_filename and clean_path
+        inline constexpr std::array<uint8_t, 128> pathFilter{ {
             // clang-format off
-            0 /* NUL */, 0 /* SOH */, 0 /* STX */, 0 /* ETX */, 0 /* EOT */, 0 /* ENQ */, 0 /* ACK */, 0 /* BEL */, 0 /* BS  */, 0 /* HT  */, 0 /* LF  */, 0 /* VT  */, 0 /* FF  */, 0 /* CR  */, 0 /* SO  */, 0 /* SI  */,
-            0 /* DLE */, 0 /* DC1 */, 0 /* DC2 */, 0 /* DC3 */, 0 /* DC4 */, 0 /* NAK */, 0 /* SYN */, 0 /* ETB */, 0 /* CAN */, 0 /* EM  */, 0 /* SUB */, 0 /* ESC */, 0 /* FS  */, 0 /* GS  */, 0 /* RS  */, 0 /* US  */,
-            0 /* SP  */, 0 /* !   */, 1 /* "   */, 0 /* #   */, 0 /* $   */, 0 /* %   */, 0 /* &   */, 0 /* '   */, 0 /* (   */, 0 /* )   */, 1 /* *   */, 0 /* +   */, 0 /* ,   */, 0 /* -   */, 0 /* .   */, 1 /* /   */,
-            0 /* 0   */, 0 /* 1   */, 0 /* 2   */, 0 /* 3   */, 0 /* 4   */, 0 /* 5   */, 0 /* 6   */, 0 /* 7   */, 0 /* 8   */, 0 /* 9   */, 1 /* :   */, 0 /* ;   */, 1 /* <   */, 0 /* =   */, 1 /* >   */, 1 /* ?   */,
-            0 /* @   */, 0 /* A   */, 0 /* B   */, 0 /* C   */, 0 /* D   */, 0 /* E   */, 0 /* F   */, 0 /* G   */, 0 /* H   */, 0 /* I   */, 0 /* J   */, 0 /* K   */, 0 /* L   */, 0 /* M   */, 0 /* N   */, 0 /* O   */,
-            0 /* P   */, 0 /* Q   */, 0 /* R   */, 0 /* S   */, 0 /* T   */, 0 /* U   */, 0 /* V   */, 0 /* W   */, 0 /* X   */, 0 /* Y   */, 0 /* Z   */, 0 /* [   */, 1 /* \   */, 0 /* ]   */, 0 /* ^   */, 0 /* _   */,
-            0 /* `   */, 0 /* a   */, 0 /* b   */, 0 /* c   */, 0 /* d   */, 0 /* e   */, 0 /* f   */, 0 /* g   */, 0 /* h   */, 0 /* i   */, 0 /* j   */, 0 /* k   */, 0 /* l   */, 0 /* m   */, 0 /* n   */, 0 /* o   */,
-            0 /* p   */, 0 /* q   */, 0 /* r   */, 0 /* s   */, 0 /* t   */, 0 /* u   */, 0 /* v   */, 0 /* w   */, 0 /* x   */, 0 /* y   */, 0 /* z   */, 0 /* {   */, 1 /* |   */, 0 /* }   */, 0 /* ~   */, 0 /* DEL */,
+            __ /* NUL */, __ /* SOH */, __ /* STX */, __ /* ETX */, __ /* EOT */, __ /* ENQ */, __ /* ACK */, __ /* BEL */, __ /* BS  */, __ /* HT  */, __ /* LF  */, __ /* VT  */, __ /* FF  */, __ /* CR  */, __ /* SO  */, __ /* SI  */,
+            __ /* DLE */, __ /* DC1 */, __ /* DC2 */, __ /* DC3 */, __ /* DC4 */, __ /* NAK */, __ /* SYN */, __ /* ETB */, __ /* CAN */, __ /* EM  */, __ /* SUB */, __ /* ESC */, __ /* FS  */, __ /* GS  */, __ /* RS  */, __ /* US  */,
+            __ /* SP  */, __ /* !   */, FP /* "   */, __ /* #   */, __ /* $   */, __ /* %   */, __ /* &   */, __ /* '   */, __ /* (   */, __ /* )   */, FP /* *   */, __ /* +   */, __ /* ,   */, __ /* -   */, __ /* .   */, F_ /* /   */,
+            __ /* 0   */, __ /* 1   */, __ /* 2   */, __ /* 3   */, __ /* 4   */, __ /* 5   */, __ /* 6   */, __ /* 7   */, __ /* 8   */, __ /* 9   */, F_ /* :   */, __ /* ;   */, FP /* <   */, __ /* =   */, FP /* >   */, FP /* ?   */,
+            __ /* @   */, __ /* A   */, __ /* B   */, __ /* C   */, __ /* D   */, __ /* E   */, __ /* F   */, __ /* G   */, __ /* H   */, __ /* I   */, __ /* J   */, __ /* K   */, __ /* L   */, __ /* M   */, __ /* N   */, __ /* O   */,
+            __ /* P   */, __ /* Q   */, __ /* R   */, __ /* S   */, __ /* T   */, __ /* U   */, __ /* V   */, __ /* W   */, __ /* X   */, __ /* Y   */, __ /* Z   */, __ /* [   */, F_ /* \   */, __ /* ]   */, __ /* ^   */, __ /* _   */,
+            __ /* `   */, __ /* a   */, __ /* b   */, __ /* c   */, __ /* d   */, __ /* e   */, __ /* f   */, __ /* g   */, __ /* h   */, __ /* i   */, __ /* j   */, __ /* k   */, __ /* l   */, __ /* m   */, __ /* n   */, __ /* o   */,
+            __ /* p   */, __ /* q   */, __ /* r   */, __ /* s   */, __ /* t   */, __ /* u   */, __ /* v   */, __ /* w   */, __ /* x   */, __ /* y   */, __ /* z   */, __ /* {   */, FP /* |   */, __ /* }   */, __ /* ~   */, __ /* DEL */,
             // clang-format on
         } };
+    }
 
+    _TIL_INLINEPREFIX std::wstring clean_filename(std::wstring str) noexcept
+    {
+        using namespace til::details;
         std::erase_if(str, [](auto ch) {
             // This lookup is branchless: It always checks the filter, but throws
             // away the result if ch >= 128. This is faster than using `&&` (branchy).
-            return til::at(filter, ch & 127) & (ch < 128);
+            return ((til::at(details::pathFilter, ch & 127) & F_) != 0) & (ch < 128);
         });
         return str;
+    }
+
+    _TIL_INLINEPREFIX std::wstring clean_path(std::wstring str) noexcept
+    {
+        using namespace til::details;
+        std::erase_if(str, [](auto ch) {
+            return ((til::at(details::pathFilter, ch & 127) & _P) != 0) & (ch < 128);
+        });
+        return str;
+    }
+
+    // is_legal_path rules on whether a path contains any non-path characters.
+    // it **DOES NOT** rule on whether a path exists.
+    _TIL_INLINEPREFIX constexpr bool is_legal_path(const std::wstring_view str) noexcept
+    {
+        using namespace til::details;
+        return !std::any_of(std::begin(str), std::end(str), [](auto&& ch) {
+            return ((til::at(details::pathFilter, ch & 127) & _P) != 0) & (ch < 128);
+        });
     }
 
     // std::string_view::starts_with support for C++17.
@@ -86,92 +131,6 @@ namespace til // Terminal Implementation Library. Also: "Today I Learned"
     constexpr bool ends_with(const std::wstring_view& str, const std::wstring_view& prefix) noexcept
     {
         return ends_with<>(str, prefix);
-    }
-
-    inline constexpr unsigned long to_ulong_error = ULONG_MAX;
-
-    // Just like std::wcstoul, but without annoying locales and null-terminating strings.
-    // It has been fuzz-tested against clang's strtoul implementation.
-    template<typename T, typename Traits>
-    _TIL_INLINEPREFIX constexpr unsigned long to_ulong(const std::basic_string_view<T, Traits>& str, unsigned long base = 0) noexcept
-    {
-        static constexpr unsigned long maximumValue = ULONG_MAX / 16;
-
-        // We don't have to test ptr for nullability, as we only access it under either condition:
-        // * str.length() > 0, for determining the base
-        // * ptr != end, when parsing the characters; if ptr is null, length will be 0 and thus end == ptr
-#pragma warning(push)
-#pragma warning(disable : 26429) // Symbol 'ptr' is never tested for nullness, it can be marked as not_null
-#pragma warning(disable : 26481) // Don't use pointer arithmetic. Use span instead
-        auto ptr = str.data();
-        const auto end = ptr + str.length();
-        unsigned long accumulator = 0;
-        unsigned long value = ULONG_MAX;
-
-        if (!base)
-        {
-            base = 10;
-
-            if (str.length() > 1 && *ptr == '0')
-            {
-                base = 8;
-                ++ptr;
-
-                if (str.length() > 2 && (*ptr == 'x' || *ptr == 'X'))
-                {
-                    base = 16;
-                    ++ptr;
-                }
-            }
-        }
-
-        if (ptr == end)
-        {
-            return to_ulong_error;
-        }
-
-        for (;; accumulator *= base)
-        {
-            value = ULONG_MAX;
-            if (*ptr >= '0' && *ptr <= '9')
-            {
-                value = *ptr - '0';
-            }
-            else if (*ptr >= 'A' && *ptr <= 'F')
-            {
-                value = *ptr - 'A' + 10;
-            }
-            else if (*ptr >= 'a' && *ptr <= 'f')
-            {
-                value = *ptr - 'a' + 10;
-            }
-            else
-            {
-                return to_ulong_error;
-            }
-
-            accumulator += value;
-            if (accumulator >= maximumValue)
-            {
-                return to_ulong_error;
-            }
-
-            if (++ptr == end)
-            {
-                return accumulator;
-            }
-        }
-#pragma warning(pop)
-    }
-
-    constexpr unsigned long to_ulong(const std::string_view& str, unsigned long base = 0) noexcept
-    {
-        return to_ulong<>(str, base);
-    }
-
-    constexpr unsigned long to_ulong(const std::wstring_view& str, unsigned long base = 0) noexcept
-    {
-        return to_ulong<>(str, base);
     }
 
     // Just like std::tolower, but without annoying locales.
@@ -282,37 +241,392 @@ namespace til // Terminal Implementation Library. Also: "Today I Learned"
         return ends_with<>(str, prefix);
     }
 
-    // Give the arguments ("foo bar baz", " "), this method will
-    // * modify the first argument to "bar baz"
-    // * return "foo"
-    // If the needle cannot be found the "str" argument is returned as is.
     template<typename T, typename Traits>
-    std::basic_string_view<T, Traits> prefix_split(std::basic_string_view<T, Traits>& str, const std::basic_string_view<T, Traits>& needle) noexcept
+    constexpr std::basic_string_view<T, Traits> trim(const std::basic_string_view<T, Traits>& str, const T ch) noexcept
     {
-        using view_type = std::basic_string_view<T, Traits>;
+        auto beg = str.data();
+        auto end = beg + str.size();
 
-        const auto idx = str.find(needle);
-        // > If the needle cannot be found the "str" argument is returned as is.
-        // ...but if needle is empty, idx will always be npos, forcing us to return str.
-        if (idx == view_type::npos || needle.empty())
+        for (; beg != end && *beg == ch; ++beg)
         {
-            return std::exchange(str, {});
         }
 
-        const auto suffixIdx = idx + needle.size();
-        const view_type result{ str.data(), idx };
-#pragma warning(suppress : 26481) // Don't use pointer arithmetic. Use span instead
-        str = { str.data() + suffixIdx, str.size() - suffixIdx };
-        return result;
+        for (; beg != end && end[-1] == ch; --end)
+        {
+        }
+
+        return { beg, end };
     }
 
-    inline std::string_view prefix_split(std::string_view& str, const std::string_view& needle) noexcept
+    // The primary use-case for this is in for-range loops to split a string by a delimiter.
+    // For instance, to split a string by semicolon:
+    //   for (const auto& token : wil::split_iterator{ str, L';' })
+    //
+    // It's written in a way that lets MSVC optimize away the _advance flag and
+    // the ternary in advance(). The resulting assembly is quite alright.
+    template<typename T, typename Traits>
+    struct split_iterator
     {
-        return prefix_split<>(str, needle);
+        struct sentinel
+        {
+        };
+
+        struct iterator
+        {
+            using iterator_category = std::forward_iterator_tag;
+            using value_type = std::basic_string_view<T, Traits>;
+            using reference = value_type&;
+            using pointer = value_type*;
+            using difference_type = std::ptrdiff_t;
+
+            explicit constexpr iterator(split_iterator& p) noexcept
+                :
+                _iter{ p }
+            {
+            }
+
+            const value_type& operator*() const noexcept
+            {
+                return _iter.value();
+            }
+
+            iterator& operator++() noexcept
+            {
+                _iter.advance();
+                return *this;
+            }
+
+            bool operator!=(const sentinel&) const noexcept
+            {
+                return _iter.valid();
+            }
+
+        private:
+            split_iterator& _iter;
+        };
+
+        explicit constexpr split_iterator(const std::basic_string_view<T, Traits>& str, T needle) noexcept :
+            _it{ str.begin() },
+            _tok{ str.begin() },
+            _end{ str.end() },
+            _needle{ needle }
+        {
+        }
+
+        iterator begin() noexcept
+        {
+            return iterator{ *this };
+        }
+
+        sentinel end() noexcept
+        {
+            return sentinel{};
+        }
+
+    private:
+        bool valid() const noexcept
+        {
+            return _tok != _end;
+        }
+
+        void advance() noexcept
+        {
+            _it = _tok == _end ? _end : _tok + 1;
+            _advance = true;
+        }
+
+        const typename iterator::value_type& value() noexcept
+        {
+            if (_advance)
+            {
+                _tok = std::find(_it, _end, _needle);
+                _value = { _it, _tok };
+                _advance = false;
+            }
+            return _value;
+        }
+
+        typename iterator::value_type::iterator _it;
+        typename iterator::value_type::iterator _tok;
+        typename iterator::value_type::iterator _end;
+        typename iterator::value_type _value;
+        T _needle;
+        bool _advance = true;
+    };
+
+    namespace details
+    {
+        // Just like std::wcstoul, but without annoying locales and null-terminating strings.
+        template<typename T, typename Traits>
+        _TIL_INLINEPREFIX constexpr std::optional<uint64_t> parse_u64(const std::basic_string_view<T, Traits>& str, int base = 0) noexcept
+        {
+            // We don't have to test ptr for nullability, as we only access it under either condition:
+            // * str.size() > 0, for determining the base
+            // * ptr != end, when parsing the characters; if ptr is null, length will be 0 and thus end == ptr
+#pragma warning(push)
+#pragma warning(disable : 26429) // Symbol 'ptr' is never tested for nullness, it can be marked as not_null
+#pragma warning(disable : 26451) // Arithmetic overflow: Using operator '+' on a 4 byte value and then casting the result to a 8 byte value. [...]
+#pragma warning(disable : 26481) // Don't use pointer arithmetic. Use span instead
+            auto ptr = str.data();
+            const auto end = ptr + str.size();
+            uint64_t accumulator = 0;
+            uint64_t base_uint64 = base;
+
+            if (base <= 0)
+            {
+                base_uint64 = 10;
+
+                if (str.size() >= 2 && *ptr == '0')
+                {
+                    base_uint64 = 8;
+                    ptr += 1;
+
+                    // Shift to lowercase to make the comparison easier.
+                    const auto ch = *ptr | 0x20;
+
+                    if (ch == 'b')
+                    {
+                        base_uint64 = 2;
+                        ptr += 1;
+                    }
+                    else if (ch == 'x')
+                    {
+                        base_uint64 = 16;
+                        ptr += 1;
+                    }
+                }
+            }
+
+            if (ptr == end || base_uint64 > 36)
+            {
+                return {};
+            }
+
+            const auto max_before_mul = UINT64_MAX / base_uint64;
+
+            for (;;)
+            {
+                // Magic mapping from 0-9, A-Z, a-z to 0-35 go brrr. Invalid values are >35.
+                const uint64_t ch = *ptr;
+                const uint64_t sub = ch >= '0' && ch <= '9' ? (('0' - 1) & ~0x20) : (('A' - 1) & ~0x20) - 10;
+                // 'A' and 'a' reside at 0b...00001. By subtracting 1 we shift them to 0b...00000.
+                // We can then mask off 0b..1..... (= 0x20) to map a-z to A-Z.
+                // Once we subtract `sub`, all characters between Z and a will underflow.
+                // This results in A-Z and a-z mapping to 10-35.
+                const uint64_t value = ((ch - 1) & ~0x20) - sub;
+
+                // This is where we'd be using __builtin_mul_overflow and __builtin_add_overflow,
+                // but when MSVC finally added support for it in v17.7, it had a different name,
+                // only worked on x86, and only for signed integers. So, we can't use it.
+                const auto acc = accumulator * base_uint64 + value;
+                if (
+                    // Check for invalid inputs.
+                    value >= base_uint64 ||
+                    // Check for multiplication overflow.
+                    accumulator > max_before_mul ||
+                    // Check for addition overflow.
+                    acc < accumulator)
+                {
+                    return {};
+                }
+
+                accumulator = acc;
+                ptr += 1;
+
+                if (ptr == end)
+                {
+                    return accumulator;
+                }
+            }
+#pragma warning(pop)
+        }
+
+        template<std::unsigned_integral R, typename T, typename Traits>
+        constexpr std::optional<R> parse_unsigned(const std::basic_string_view<T, Traits>& str, int base = 0) noexcept
+        {
+            if constexpr (std::is_same_v<R, uint64_t>)
+            {
+                return details::parse_u64<>(str, base);
+            }
+            else
+            {
+                const auto opt = details::parse_u64<>(str, base);
+                if (!opt || *opt > uint64_t{ std::numeric_limits<R>::max() })
+                {
+                    return {};
+                }
+                return gsl::narrow_cast<R>(*opt);
+            }
+        }
+
+        template<std::signed_integral R, typename T, typename Traits>
+        constexpr std::optional<R> parse_signed(std::basic_string_view<T, Traits> str, int base = 0) noexcept
+        {
+            const bool hasSign = str.starts_with(L'-');
+            if (hasSign)
+            {
+                str = str.substr(1);
+            }
+
+            const auto opt = details::parse_u64<>(str, base);
+            const auto max = gsl::narrow_cast<uint64_t>(std::numeric_limits<R>::max()) + hasSign;
+            if (!opt || *opt > max)
+            {
+                return {};
+            }
+
+            const auto r = gsl::narrow_cast<R>(*opt);
+            return hasSign ? -r : r;
+        }
     }
 
-    inline std::wstring_view prefix_split(std::wstring_view& str, const std::wstring_view& needle) noexcept
+    template<typename R>
+    constexpr std::optional<R> parse_unsigned(const std::string_view& str, int base = 0) noexcept
     {
-        return prefix_split<>(str, needle);
+        return details::parse_unsigned<R>(str, base);
+    }
+
+    template<typename R>
+    constexpr std::optional<R> parse_unsigned(const std::wstring_view& str, int base = 0) noexcept
+    {
+        return details::parse_unsigned<R>(str, base);
+    }
+
+    template<typename R>
+    constexpr std::optional<R> parse_signed(const std::string_view& str, int base = 0) noexcept
+    {
+        return details::parse_signed<R>(str, base);
+    }
+
+    template<typename R>
+    constexpr std::optional<R> parse_signed(const std::wstring_view& str, int base = 0) noexcept
+    {
+        return details::parse_signed<R>(str, base);
+    }
+
+    // Splits a font-family list into individual font-families. It loosely follows the CSS spec for font-family.
+    // It splits by comma, handles quotes and simple escape characters, and it cleans whitespace.
+    //
+    // This is not the right place to put this, because it's highly specialized towards font-family names.
+    // But this code is needed both, in our renderer and in our settings UI. At the time I couldn't find a better place for it.
+    void iterate_font_families(const std::wstring_view& families, auto&& callback)
+    {
+        std::wstring family;
+        bool escape = false;
+        bool delayedSpace = false;
+        wchar_t stringType = 0;
+
+        for (const auto ch : families)
+        {
+            if (!escape)
+            {
+                switch (ch)
+                {
+                case ' ':
+                    if (stringType)
+                    {
+                        // Spaces are treated literally inside strings.
+                        break;
+                    }
+                    delayedSpace = !family.empty();
+                    continue;
+                case '"':
+                case '\'':
+                    if (stringType && stringType != ch)
+                    {
+                        // Single quotes inside double quotes are treated literally and vice versa.
+                        break;
+                    }
+                    stringType = stringType == ch ? 0 : ch;
+                    continue;
+                case ',':
+                    if (stringType)
+                    {
+                        // Commas are treated literally inside strings.
+                        break;
+                    }
+                    if (!family.empty())
+                    {
+                        callback(std::move(family));
+                        family.clear();
+                        delayedSpace = false;
+                    }
+                    continue;
+                case '\\':
+                    escape = true;
+                    continue;
+                default:
+                    break;
+                }
+            }
+
+            // The `delayedSpace` logic automatically takes care for us to
+            // strip leading and trailing spaces and deduplicate them too.
+            if (delayedSpace)
+            {
+                delayedSpace = false;
+                family.push_back(L' ');
+            }
+
+            family.push_back(ch);
+            escape = false;
+        }
+
+        // Just like the comma handler above.
+        if (!stringType && !family.empty())
+        {
+            callback(std::move(family));
+        }
+    }
+
+    // This function is appropriate for case-insensitive equivalence testing of file paths and other "system" strings.
+    // Similar to memcmp, this returns <0, 0 or >0.
+    inline int compare_ordinal_insensitive(const std::wstring_view& lhs, const std::wstring_view& rhs) noexcept
+    {
+        const auto lhsLen = ::base::saturated_cast<int>(lhs.size());
+        const auto rhsLen = ::base::saturated_cast<int>(rhs.size());
+        // MSDN:
+        // > To maintain the C runtime convention of comparing strings,
+        // > the value 2 can be subtracted from a nonzero return value.
+        // > [...]
+        // > The function returns 0 if it does not succeed. [...] following error codes:
+        // > * ERROR_INVALID_PARAMETER. Any of the parameter values was invalid.
+        // -> We can just subtract 2.
+        return CompareStringOrdinal(lhs.data(), lhsLen, rhs.data(), rhsLen, TRUE) - 2;
+    }
+
+    // This function is appropriate for sorting strings primarily used for human consumption, like a list of file names.
+    // Similar to memcmp, this returns <0, 0 or >0.
+    inline int compare_linguistic_insensitive(const std::wstring_view& lhs, const std::wstring_view& rhs) noexcept
+    {
+        const auto lhsLen = ::base::saturated_cast<int>(lhs.size());
+        const auto rhsLen = ::base::saturated_cast<int>(rhs.size());
+        // MSDN:
+        // > To maintain the C runtime convention of comparing strings,
+        // > the value 2 can be subtracted from a nonzero return value.
+        // > [...]
+        // > The function returns 0 if it does not succeed. [...] following error codes:
+        // > * ERROR_INVALID_FLAGS. The values supplied for flags were invalid.
+        // > * ERROR_INVALID_PARAMETER. Any of the parameter values was invalid.
+        // -> We can just subtract 2.
+#pragma warning(suppress : 26477) // Use 'nullptr' rather than 0 or NULL (es.47).
+        return CompareStringEx(LOCALE_NAME_USER_DEFAULT, LINGUISTIC_IGNORECASE, lhs.data(), lhsLen, rhs.data(), rhsLen, nullptr, nullptr, 0) - 2;
+    }
+
+    // This function is appropriate for strings primarily used for human consumption, like a list of file names.
+    inline bool contains_linguistic_insensitive(const std::wstring_view& str, const std::wstring_view& needle) noexcept
+    {
+        const auto strLen = ::base::saturated_cast<int>(str.size());
+        const auto needleLen = ::base::saturated_cast<int>(needle.size());
+        // MSDN:
+        // > Returns a 0-based index into the source string indicated by lpStringSource if successful.
+        // > [...]
+        // > The function returns -1 if it does not succeed.
+        // > * ERROR_INVALID_FLAGS. The values supplied for flags were not valid.
+        // > * ERROR_INVALID_PARAMETER. Any of the parameter values was invalid.
+        // > * ERROR_SUCCESS. The action completed successfully but yielded no results.
+        // -> We can just check for -1.
+#pragma warning(suppress : 26477) // Use 'nullptr' rather than 0 or NULL (es.47).
+        return FindNLSStringEx(LOCALE_NAME_USER_DEFAULT, LINGUISTIC_IGNORECASE, str.data(), strLen, needle.data(), needleLen, nullptr, nullptr, nullptr, 0) != -1;
     }
 }

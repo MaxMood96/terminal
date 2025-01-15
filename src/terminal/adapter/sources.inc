@@ -14,7 +14,7 @@
 # Preprocessor Settings
 # -------------------------------------
 
-C_DEFINES               = $(C_DEFINES) -DBUILD_ONECORE_INTERACTIVITY
+C_DEFINES               = $(C_DEFINES)
 
 # -------------------------------------
 # Build System Settings
@@ -33,10 +33,11 @@ SOURCES= \
     ..\adaptDispatch.cpp \
     ..\FontBuffer.cpp \
     ..\InteractDispatch.cpp \
+    ..\MacroBuffer.cpp \
+    ..\PageManager.cpp \
+    ..\SixelParser.cpp \
     ..\adaptDispatchGraphics.cpp \
     ..\terminalOutput.cpp \
-    ..\telemetry.cpp \
-    ..\tracing.cpp \
 
 INCLUDES = \
     $(INCLUDES); \

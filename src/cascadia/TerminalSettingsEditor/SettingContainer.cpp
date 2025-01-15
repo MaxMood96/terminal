@@ -12,7 +12,9 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
 {
     DependencyProperty SettingContainer::_HeaderProperty{ nullptr };
     DependencyProperty SettingContainer::_HelpTextProperty{ nullptr };
+    DependencyProperty SettingContainer::_FontIconGlyphProperty{ nullptr };
     DependencyProperty SettingContainer::_CurrentValueProperty{ nullptr };
+    DependencyProperty SettingContainer::_CurrentValueTemplateProperty{ nullptr };
     DependencyProperty SettingContainer::_HasSettingValueProperty{ nullptr };
     DependencyProperty SettingContainer::_SettingOverrideSourceProperty{ nullptr };
     DependencyProperty SettingContainer::_StartExpandedProperty{ nullptr };
@@ -45,14 +47,32 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
                     xaml_typename<Editor::SettingContainer>(),
                     PropertyMetadata{ box_value(L"") });
         }
+        if (!_FontIconGlyphProperty)
+        {
+            _FontIconGlyphProperty =
+                DependencyProperty::Register(
+                    L"FontIconGlyph",
+                    xaml_typename<hstring>(),
+                    xaml_typename<Editor::SettingContainer>(),
+                    PropertyMetadata{ box_value(L"") });
+        }
         if (!_CurrentValueProperty)
         {
             _CurrentValueProperty =
                 DependencyProperty::Register(
                     L"CurrentValue",
-                    xaml_typename<hstring>(),
+                    xaml_typename<IInspectable>(),
                     xaml_typename<Editor::SettingContainer>(),
-                    PropertyMetadata{ box_value(L"") });
+                    PropertyMetadata{ nullptr });
+        }
+        if (!_CurrentValueTemplateProperty)
+        {
+            _CurrentValueTemplateProperty =
+                DependencyProperty::Register(
+                    L"CurrentValueTemplate",
+                    xaml_typename<Windows::UI::Xaml::DataTemplate>(),
+                    xaml_typename<Editor::SettingContainer>(),
+                    PropertyMetadata{ nullptr });
         }
         if (!_HasSettingValueProperty)
         {
@@ -100,7 +120,7 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
                 // When clicked, we dispatch the bound ClearSettingValue event,
                 // resulting in inheriting the setting value from the parent.
                 button.Click([=](auto&&, auto&&) {
-                    _ClearSettingValueHandlers(*this, nullptr);
+                    ClearSettingValue.raise(*this, nullptr);
 
                     // move the focus to the child control
                     if (const auto& content{ Content() })
@@ -133,43 +153,45 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
         _UpdateOverrideSystem();
 
         // Get the correct base to apply automation properties to
-        DependencyObject base{ nullptr };
+        std::vector<DependencyObject> base;
+        base.reserve(2);
         if (const auto& child{ GetTemplateChild(L"Expander") })
         {
             if (const auto& expander{ child.try_as<Microsoft::UI::Xaml::Controls::Expander>() })
             {
-                base = child;
+                base.push_back(child);
             }
         }
-        else if (const auto& content{ Content() })
+        if (const auto& content{ Content() })
         {
-            if (const auto& obj{ content.try_as<DependencyObject>() })
+            const auto& panel{ content.try_as<Controls::Panel>() };
+            const auto& obj{ content.try_as<DependencyObject>() };
+            if (!panel && obj)
             {
-                base = obj;
+                base.push_back(obj);
             }
         }
 
-        if (base)
+        for (const auto& obj : base)
         {
             // apply header as name (automation property)
             if (const auto& header{ Header() })
             {
                 if (const auto headerText{ header.try_as<hstring>() })
                 {
-                    Automation::AutomationProperties::SetName(base, *headerText);
+                    Automation::AutomationProperties::SetName(obj, *headerText);
                 }
             }
 
             // apply help text as tooltip and full description (automation property)
             if (const auto& helpText{ HelpText() }; !helpText.empty())
             {
-                Controls::ToolTipService::SetToolTip(base, box_value(helpText));
-                Automation::AutomationProperties::SetFullDescription(base, helpText);
+                Automation::AutomationProperties::SetFullDescription(obj, helpText);
             }
             else
             {
-                Controls::ToolTipService::SetToolTip(base, nullptr);
-                Automation::AutomationProperties::SetFullDescription(base, L"");
+                Controls::ToolTipService::SetToolTip(obj, nullptr);
+                Automation::AutomationProperties::SetFullDescription(obj, L"");
             }
         }
 
@@ -179,6 +201,17 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
             if (const auto& textBlock{ child.try_as<Controls::TextBlock>() })
             {
                 textBlock.Visibility(textBlockHidden ? Visibility::Collapsed : Visibility::Visible);
+            }
+        }
+    }
+
+    void SettingContainer::SetExpanded(bool expanded)
+    {
+        if (const auto& child{ GetTemplateChild(L"Expander") })
+        {
+            if (const auto& expander{ child.try_as<Microsoft::UI::Xaml::Controls::Expander>() })
+            {
+                expander.IsExpanded(expanded);
             }
         }
     }
@@ -242,7 +275,7 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
         if (originTag == Model::OriginTag::Fragment || originTag == Model::OriginTag::Generated)
         {
             // from a fragment extension or generated profile
-            return hstring{ fmt::format(std::wstring_view{ RS_(L"SettingContainer_OverrideMessageFragmentExtension") }, source) };
+            return hstring{ RS_fmt(L"SettingContainer_OverrideMessageFragmentExtension", source) };
         }
         return RS_(L"SettingContainer_OverrideMessageBaseLayer");
     }

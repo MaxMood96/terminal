@@ -81,7 +81,7 @@ static wchar_t* _ConsoleHostPath()
             // We tried the architecture infix version and failed, fall back to conhost.
             return _InboxConsoleHostPath();
         }
-        auto modulePathAsString{ modulePath.wstring() };
+        const auto& modulePathAsString = modulePath.native();
         return wil::make_process_heap_string_nothrow(modulePathAsString.data(), modulePathAsString.size());
 #endif // __INSIDE_WINDOWS
     }();
@@ -93,7 +93,7 @@ static bool _HandleIsValid(HANDLE h) noexcept
     return (h != INVALID_HANDLE_VALUE) && (h != nullptr);
 }
 
-HRESULT _CreatePseudoConsole(const HANDLE hToken,
+HRESULT _CreatePseudoConsole(HANDLE hToken,
                              const COORD size,
                              const HANDLE hInput,
                              const HANDLE hOutput,
@@ -109,8 +109,22 @@ HRESULT _CreatePseudoConsole(const HANDLE hToken,
         return E_INVALIDARG;
     }
 
+    // CreateProcessAsUserW expects the token to be either valid or null.
+    if (hToken == INVALID_HANDLE_VALUE)
+    {
+        hToken = nullptr;
+    }
+
     wil::unique_handle serverHandle;
     RETURN_IF_NTSTATUS_FAILED(CreateServerHandle(serverHandle.addressof(), TRUE));
+
+    // The hPtyReference we create here is used when the PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE attribute is processed.
+    // This ensures that conhost's client processes inherit the correct (= our) console handle.
+    wil::unique_handle referenceHandle;
+    RETURN_IF_NTSTATUS_FAILED(CreateClientHandle(referenceHandle.addressof(),
+                                                 serverHandle.get(),
+                                                 L"\\Reference",
+                                                 FALSE));
 
     wil::unique_handle signalPipeConhostSide;
     wil::unique_handle signalPipeOurSide;
@@ -124,26 +138,40 @@ HRESULT _CreatePseudoConsole(const HANDLE hToken,
     RETURN_IF_WIN32_BOOL_FALSE(CreatePipe(signalPipeConhostSide.addressof(), signalPipeOurSide.addressof(), &sa, 0));
     RETURN_IF_WIN32_BOOL_FALSE(SetHandleInformation(signalPipeConhostSide.get(), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT));
 
-    // GH4061: Ensure that the path to executable in the format is escaped so C:\Program.exe cannot collide with C:\Program Files
-    auto pwszFormat = L"\"%s\" --headless %s%s%s%s--width %hu --height %hu --signal 0x%x --server 0x%x";
-    // This is plenty of space to hold the formatted string
-    wchar_t cmd[MAX_PATH]{};
     const BOOL bInheritCursor = (dwFlags & PSEUDOCONSOLE_INHERIT_CURSOR) == PSEUDOCONSOLE_INHERIT_CURSOR;
-    const BOOL bResizeQuirk = (dwFlags & PSEUDOCONSOLE_RESIZE_QUIRK) == PSEUDOCONSOLE_RESIZE_QUIRK;
-    const BOOL bWin32InputMode = (dwFlags & PSEUDOCONSOLE_WIN32_INPUT_MODE) == PSEUDOCONSOLE_WIN32_INPUT_MODE;
-    const BOOL bPassthroughMode = (dwFlags & PSEUDOCONSOLE_PASSTHROUGH_MODE) == PSEUDOCONSOLE_PASSTHROUGH_MODE;
-    swprintf_s(cmd,
-               MAX_PATH,
-               pwszFormat,
-               _ConsoleHostPath(),
-               bInheritCursor ? L"--inheritcursor " : L"",
-               bWin32InputMode ? L"--win32input " : L"",
-               bResizeQuirk ? L"--resizeQuirk " : L"",
-               bPassthroughMode ? L"--passthrough " : L"",
-               size.X,
-               size.Y,
-               signalPipeConhostSide.get(),
-               serverHandle.get());
+
+    const wchar_t* textMeasurement;
+    switch (dwFlags & PSEUDOCONSOLE_GLYPH_WIDTH__MASK)
+    {
+    case PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES:
+        textMeasurement = L"--textMeasurement graphemes ";
+        break;
+    case PSEUDOCONSOLE_GLYPH_WIDTH_WCSWIDTH:
+        textMeasurement = L"--textMeasurement wcswidth ";
+        break;
+    case PSEUDOCONSOLE_GLYPH_WIDTH_CONSOLE:
+        textMeasurement = L"--textMeasurement console ";
+        break;
+    default:
+        textMeasurement = L"";
+        break;
+    }
+
+    const auto conhostPath = _ConsoleHostPath();
+
+    // GH4061: Ensure that the path to executable in the format is escaped so C:\Program.exe cannot collide with C:\Program Files
+    // This is plenty of space to hold the formatted string
+    wil::unique_process_heap_string cmd;
+    RETURN_IF_FAILED(wil::str_printf_nothrow(
+        cmd,
+        L"\"%s\" --headless %s%s--width %hd --height %hd --signal 0x%tx --server 0x%tx",
+        conhostPath,
+        bInheritCursor ? L"--inheritcursor " : L"",
+        textMeasurement,
+        size.X,
+        size.Y,
+        std::bit_cast<uintptr_t>(signalPipeConhostSide.get()),
+        std::bit_cast<uintptr_t>(serverHandle.get())));
 
     STARTUPINFOEXW siEx{ 0 };
     siEx.StartupInfo.cb = sizeof(STARTUPINFOEXW);
@@ -185,7 +213,8 @@ HRESULT _CreatePseudoConsole(const HANDLE hToken,
                                                          nullptr,
                                                          nullptr));
     wil::unique_process_information pi;
-    { // wow64 disabled filesystem redirection scope
+    {
+        // wow64 disabled filesystem redirection scope
 #if defined(BUILD_WOW6432)
         PVOID RedirectionFlag;
         RETURN_IF_NTSTATUS_FAILED(RtlWow64EnableFsRedirectionEx(
@@ -195,47 +224,25 @@ HRESULT _CreatePseudoConsole(const HANDLE hToken,
             RtlWow64EnableFsRedirectionEx(RedirectionFlag, &RedirectionFlag);
         });
 #endif
-        if (hToken == INVALID_HANDLE_VALUE || hToken == nullptr)
-        {
-            // Call create process
-            RETURN_IF_WIN32_BOOL_FALSE(CreateProcessW(_ConsoleHostPath(),
-                                                      cmd,
-                                                      nullptr,
-                                                      nullptr,
-                                                      TRUE,
-                                                      EXTENDED_STARTUPINFO_PRESENT,
-                                                      nullptr,
-                                                      nullptr,
-                                                      &siEx.StartupInfo,
-                                                      pi.addressof()));
-        }
-        else
-        {
-            // Call create process
-            RETURN_IF_WIN32_BOOL_FALSE(CreateProcessAsUserW(hToken,
-                                                            _ConsoleHostPath(),
-                                                            cmd,
-                                                            nullptr,
-                                                            nullptr,
-                                                            TRUE,
-                                                            EXTENDED_STARTUPINFO_PRESENT,
-                                                            nullptr,
-                                                            nullptr,
-                                                            &siEx.StartupInfo,
-                                                            pi.addressof()));
-        }
+
+        // Call create process
+        RETURN_IF_WIN32_BOOL_FALSE(CreateProcessAsUserW(
+            hToken,
+            conhostPath,
+            cmd.get(),
+            nullptr,
+            nullptr,
+            TRUE,
+            EXTENDED_STARTUPINFO_PRESENT,
+            nullptr,
+            nullptr,
+            &siEx.StartupInfo,
+            pi.addressof()));
     }
 
-    // Move the process handle out of the PROCESS_INFORMATION into out Pseudoconsole
-    pPty->hConPtyProcess = pi.hProcess;
-    pi.hProcess = nullptr;
-
-    RETURN_IF_NTSTATUS_FAILED(CreateClientHandle(&pPty->hPtyReference,
-                                                 serverHandle.get(),
-                                                 L"\\Reference",
-                                                 FALSE));
-
     pPty->hSignal = signalPipeOurSide.release();
+    pPty->hPtyReference = referenceHandle.release();
+    pPty->hConPtyProcess = std::exchange(pi.hProcess, nullptr);
 
     return S_OK;
 }
@@ -326,15 +333,20 @@ HRESULT _ReparentPseudoConsole(_In_ const PseudoConsole* const pPty, _In_ const 
     {
         return E_INVALIDARG;
     }
+
     // sneaky way to pack a short and a uint64_t in a relatively literal way.
 #pragma pack(push, 1)
     struct _signal
     {
         const unsigned short id;
         const uint64_t hwnd;
-    } data{ PTY_SIGNAL_REPARENT_WINDOW, (uint64_t)(newParent) };
+    };
 #pragma pack(pop)
 
+    const _signal data{
+        PTY_SIGNAL_REPARENT_WINDOW,
+        (uint64_t)(newParent),
+    };
     const auto fSuccess = WriteFile(pPty->hSignal, &data, sizeof(data), nullptr, nullptr);
 
     return fSuccess ? S_OK : HRESULT_FROM_WIN32(GetLastError());
@@ -347,47 +359,27 @@ HRESULT _ReparentPseudoConsole(_In_ const PseudoConsole* const pPty, _In_ const 
 //      HPCON via the API).
 // Arguments:
 // - pPty: A pointer to a PseudoConsole struct.
+// - wait: If true, waits for conhost/OpenConsole to exit first.
 // Return Value:
 // - <none>
 void _ClosePseudoConsoleMembers(_In_ PseudoConsole* pPty)
 {
     if (pPty != nullptr)
     {
-        // See MSFT:19918626
-        // First break the signal pipe - this will trigger conhost to tear itself down
         if (_HandleIsValid(pPty->hSignal))
         {
             CloseHandle(pPty->hSignal);
             pPty->hSignal = nullptr;
         }
-        // Then, wait on the conhost process before killing it.
-        // We do this to make sure the conhost finishes flushing any output it
-        //      has yet to send before we hard kill it.
-        if (_HandleIsValid(pPty->hConPtyProcess))
-        {
-            // If the conhost is already dead, then that's fine. Presumably
-            //      it's finished flushing it's output already.
-            DWORD dwExit = 0;
-            // If GetExitCodeProcess failed, it's likely conhost is already dead
-            //      If so, skip waiting regardless of whatever error
-            //      GetExitCodeProcess returned.
-            //      We'll just go straight to killing conhost.
-            if (GetExitCodeProcess(pPty->hConPtyProcess, &dwExit) && dwExit == STILL_ACTIVE)
-            {
-                WaitForSingleObject(pPty->hConPtyProcess, INFINITE);
-            }
-
-            TerminateProcess(pPty->hConPtyProcess, 0);
-            CloseHandle(pPty->hConPtyProcess);
-            pPty->hConPtyProcess = nullptr;
-        }
-        // Then take care of the reference handle.
-        // TODO GH#1810: Closing the reference handle late leaves conhost thinking
-        // that we have an outstanding connected client.
         if (_HandleIsValid(pPty->hPtyReference))
         {
             CloseHandle(pPty->hPtyReference);
             pPty->hPtyReference = nullptr;
+        }
+        if (_HandleIsValid(pPty->hConPtyProcess))
+        {
+            CloseHandle(pPty->hConPtyProcess);
+            pPty->hConPtyProcess = nullptr;
         }
     }
 }
@@ -398,9 +390,10 @@ void _ClosePseudoConsoleMembers(_In_ PseudoConsole* pPty)
 //      PseudoConsoles that were created with CreatePseudoConsole.
 // Arguments:
 // - pPty: A pointer to a PseudoConsole struct.
+// - wait: If true, waits for conhost/OpenConsole to exit first.
 // Return Value:
 // - <none>
-VOID _ClosePseudoConsole(_In_ PseudoConsole* pPty)
+static void _ClosePseudoConsole(_In_ PseudoConsole* pPty) noexcept
 {
     if (pPty != nullptr)
     {
@@ -445,12 +438,12 @@ extern "C" HRESULT WINAPI ConptyCreatePseudoConsole(_In_ COORD size,
     return ConptyCreatePseudoConsoleAsUser(INVALID_HANDLE_VALUE, size, hInput, hOutput, dwFlags, phPC);
 }
 
-extern "C" HRESULT ConptyCreatePseudoConsoleAsUser(_In_ HANDLE hToken,
-                                                   _In_ COORD size,
-                                                   _In_ HANDLE hInput,
-                                                   _In_ HANDLE hOutput,
-                                                   _In_ DWORD dwFlags,
-                                                   _Out_ HPCON* phPC)
+extern "C" HRESULT WINAPI ConptyCreatePseudoConsoleAsUser(_In_ HANDLE hToken,
+                                                          _In_ COORD size,
+                                                          _In_ HANDLE hInput,
+                                                          _In_ HANDLE hOutput,
+                                                          _In_ DWORD dwFlags,
+                                                          _Out_ HPCON* phPC)
 {
     if (phPC == nullptr)
     {
@@ -529,13 +522,28 @@ extern "C" HRESULT WINAPI ConptyShowHidePseudoConsole(_In_ HPCON hPC, bool show)
 // - Used to support GH#2988
 extern "C" HRESULT WINAPI ConptyReparentPseudoConsole(_In_ HPCON hPC, HWND newParent)
 {
-    const PseudoConsole* const pPty = (PseudoConsole*)hPC;
-    auto hr = pPty == nullptr ? E_INVALIDARG : S_OK;
-    if (SUCCEEDED(hr))
+    return _ReparentPseudoConsole((PseudoConsole*)hPC, newParent);
+}
+
+// The \Reference handle ensures that conhost keeps running by keeping the ConDrv server pipe open.
+// After you've finished setting up your PTY via PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, this method may be called
+// to release that handle, allowing conhost to shut down automatically once the last client has disconnected.
+// You'll know when this happens, because a ReadFile() on the output pipe will return ERROR_BROKEN_PIPE.
+extern "C" HRESULT WINAPI ConptyReleasePseudoConsole(_In_ HPCON hPC)
+{
+    const auto pPty = (PseudoConsole*)hPC;
+    if (pPty == nullptr)
     {
-        hr = _ReparentPseudoConsole(pPty, newParent);
+        return E_INVALIDARG;
     }
-    return hr;
+
+    if (_HandleIsValid(pPty->hPtyReference))
+    {
+        CloseHandle(pPty->hPtyReference);
+        pPty->hPtyReference = nullptr;
+    }
+
+    return S_OK;
 }
 
 // Function Description:
@@ -544,13 +552,10 @@ extern "C" HRESULT WINAPI ConptyReparentPseudoConsole(_In_ HPCON hPC, HWND newPa
 //      console window they were running in was closed.
 // This can fail if the conhost hosting the pseudoconsole failed to be
 //      terminated, or if the pseudoconsole was already terminated.
+// Waits for conhost/OpenConsole to exit first.
 extern "C" VOID WINAPI ConptyClosePseudoConsole(_In_ HPCON hPC)
 {
-    const auto pPty = (PseudoConsole*)hPC;
-    if (pPty != nullptr)
-    {
-        _ClosePseudoConsole(pPty);
-    }
+    _ClosePseudoConsole((PseudoConsole*)hPC);
 }
 
 // NOTE: This one is not defined in the Windows headers but is

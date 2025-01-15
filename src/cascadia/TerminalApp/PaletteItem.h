@@ -9,10 +9,12 @@ namespace winrt::TerminalApp::implementation
     struct PaletteItem : PaletteItemT<PaletteItem>
     {
     public:
-        WINRT_CALLBACK(PropertyChanged, Windows::UI::Xaml::Data::PropertyChangedEventHandler);
+        Windows::UI::Xaml::Controls::IconElement ResolvedIcon();
 
-        WINRT_OBSERVABLE_PROPERTY(winrt::hstring, Name, _PropertyChangedHandlers);
-        WINRT_OBSERVABLE_PROPERTY(winrt::hstring, Icon, _PropertyChangedHandlers);
-        WINRT_OBSERVABLE_PROPERTY(winrt::hstring, KeyChordText, _PropertyChangedHandlers);
+        til::property_changed_event PropertyChanged;
+
+        WINRT_OBSERVABLE_PROPERTY(winrt::hstring, Name, PropertyChanged.raise);
+        WINRT_OBSERVABLE_PROPERTY(winrt::hstring, Icon, PropertyChanged.raise);
+        WINRT_OBSERVABLE_PROPERTY(winrt::hstring, KeyChordText, PropertyChanged.raise);
     };
 }

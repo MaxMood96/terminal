@@ -7,6 +7,7 @@ EXPORTS
     ConptyClearPseudoConsole
     ConptyShowHidePseudoConsole
     ConptyReparentPseudoConsole
+    ConptyReleasePseudoConsole
     ConptyPackPseudoConsole
 
     ; Compatibility aliases for P/Invoke; only required for compatibility
@@ -16,3 +17,4 @@ EXPORTS
     ResizePseudoConsole = ConptyResizePseudoConsole
     ClosePseudoConsole = ConptyClosePseudoConsole
     ClearPseudoConsole = ConptyClearPseudoConsole
+    ReleasePseudoConsole = ConptyReleasePseudoConsole

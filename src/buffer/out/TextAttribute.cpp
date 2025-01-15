@@ -7,7 +7,7 @@
 
 // Keeping TextColor compact helps us keeping TextAttribute compact,
 // which in turn ensures that our buffer memory usage is low.
-static_assert(sizeof(TextAttribute) == 14);
+static_assert(sizeof(TextAttribute) == 18);
 static_assert(alignof(TextAttribute) == 2);
 // Ensure that we can memcpy() and memmove() the struct for performance.
 static_assert(std::is_trivially_copyable_v<TextAttribute>);
@@ -66,47 +66,6 @@ void TextAttribute::SetLegacyDefaultAttributes(const WORD defaultAttributes) noe
 }
 
 // Routine Description:
-// Pursuant to GH#6807
-// This routine replaces VT colors from the 16-color set with the "default"
-// flag. It is intended to be used as part of the "VT Quirk" in
-// WriteConsole[AW].
-//
-// There is going to be a very long tail of applications that will
-// explicitly request VT SGR 40/37 when what they really want is to
-// SetConsoleTextAttribute() with a black background/white foreground.
-// Instead of making those applications look bad (and therefore making us
-// look bad, because we're releasing this as an update to something that
-// "looks good" already), we're introducing this compatibility hack. Before
-// the color reckoning in GH#6698 + GH#6506, *every* color was subject to
-// being spontaneously and erroneously turned into the default color. Now,
-// only the 16-color palette value that matches the active console
-// background color will be destroyed when the quirk is enabled.
-//
-// This is not intended to be a long-term solution. This comment will be
-// discovered in forty years(*) time and people will laugh at our hubris.
-//
-// *it doesn't matter when you're reading this, it will always be 40 years
-// from now.
-TextAttribute TextAttribute::StripErroneousVT16VersionsOfLegacyDefaults(const TextAttribute& attribute) noexcept
-{
-    const auto fg{ attribute.GetForeground() };
-    const auto bg{ attribute.GetBackground() };
-    auto copy{ attribute };
-    if (fg.IsIndex16() &&
-        attribute.IsIntense() == WI_IsFlagSet(s_ansiDefaultForeground, FOREGROUND_INTENSITY) &&
-        fg.GetIndex() == (s_ansiDefaultForeground & ~FOREGROUND_INTENSITY))
-    {
-        // We don't want to turn 1;37m into 39m (or even 1;39m), as this was meant to mimic a legacy color.
-        copy.SetDefaultForeground();
-    }
-    if (bg.IsIndex16() && bg.GetIndex() == s_ansiDefaultBackground)
-    {
-        copy.SetDefaultBackground();
-    }
-    return copy;
-}
-
-// Routine Description:
 // - Returns a WORD with legacy-style attributes for this textattribute.
 // Parameters:
 // - None
@@ -116,7 +75,7 @@ WORD TextAttribute::GetLegacyAttributes() const noexcept
 {
     const auto fgIndex = _foreground.GetLegacyIndex(s_legacyDefaultForeground);
     const auto bgIndex = _background.GetLegacyIndex(s_legacyDefaultBackground);
-    const WORD metaAttrs = _wAttrLegacy & META_ATTRS;
+    const WORD metaAttrs = static_cast<WORD>(_attrs) & USED_META_ATTRS;
     const auto brighten = IsIntense() && _foreground.CanBeBrightened();
     return fgIndex | (bgIndex << 4) | metaAttrs | (brighten ? FOREGROUND_INTENSITY : 0);
 }
@@ -156,6 +115,25 @@ uint16_t TextAttribute::GetHyperlinkId() const noexcept
     return _hyperlinkId;
 }
 
+TextColor TextAttribute::GetUnderlineColor() const noexcept
+{
+    return _underlineColor;
+}
+
+// Method description:
+// - Retrieves the underline style of the text.
+// - If the attribute is not the **current** attribute of the text buffer,
+//   (eg. reading an attribute from another part of the text buffer, which
+//   was modified using DECRARA), this might return an invalid style. In this
+//   case, treat the style as singly underlined.
+// Return value:
+// - The underline style.
+UnderlineStyle TextAttribute::GetUnderlineStyle() const noexcept
+{
+    const auto styleAttr = WI_EnumValue(_attrs & CharacterAttributes::UnderlineStyle);
+    return static_cast<UnderlineStyle>(styleAttr >> UNDERLINE_STYLE_SHIFT);
+}
+
 void TextAttribute::SetForeground(const TextColor foreground) noexcept
 {
     _foreground = foreground;
@@ -164,6 +142,13 @@ void TextAttribute::SetForeground(const TextColor foreground) noexcept
 void TextAttribute::SetBackground(const TextColor background) noexcept
 {
     _background = background;
+}
+
+void TextAttribute::SetUnderlineColor(const TextColor color) noexcept
+{
+    // Index16 colors are not supported for underline colors.
+    assert(!color.IsIndex16());
+    _underlineColor = color;
 }
 
 void TextAttribute::SetForeground(const COLORREF rgbForeground) noexcept
@@ -217,151 +202,149 @@ void TextAttribute::SetHyperlinkId(uint16_t id) noexcept
     _hyperlinkId = id;
 }
 
-bool TextAttribute::IsLeadingByte() const noexcept
-{
-    return WI_IsFlagSet(_wAttrLegacy, COMMON_LVB_LEADING_BYTE);
-}
-
-bool TextAttribute::IsTrailingByte() const noexcept
-{
-    return WI_IsFlagSet(_wAttrLegacy, COMMON_LVB_LEADING_BYTE);
-}
-
 bool TextAttribute::IsTopHorizontalDisplayed() const noexcept
 {
-    return WI_IsFlagSet(_wAttrLegacy, COMMON_LVB_GRID_HORIZONTAL);
+    return WI_IsFlagSet(_attrs, CharacterAttributes::TopGridline);
 }
 
 bool TextAttribute::IsBottomHorizontalDisplayed() const noexcept
 {
-    return WI_IsFlagSet(_wAttrLegacy, COMMON_LVB_UNDERSCORE);
+    return WI_IsFlagSet(_attrs, CharacterAttributes::BottomGridline);
 }
 
 bool TextAttribute::IsLeftVerticalDisplayed() const noexcept
 {
-    return WI_IsFlagSet(_wAttrLegacy, COMMON_LVB_GRID_LVERTICAL);
+    return WI_IsFlagSet(_attrs, CharacterAttributes::LeftGridline);
 }
 
 bool TextAttribute::IsRightVerticalDisplayed() const noexcept
 {
-    return WI_IsFlagSet(_wAttrLegacy, COMMON_LVB_GRID_RVERTICAL);
+    return WI_IsFlagSet(_attrs, CharacterAttributes::RightGridline);
 }
 
 void TextAttribute::SetLeftVerticalDisplayed(const bool isDisplayed) noexcept
 {
-    WI_UpdateFlag(_wAttrLegacy, COMMON_LVB_GRID_LVERTICAL, isDisplayed);
+    WI_UpdateFlag(_attrs, CharacterAttributes::LeftGridline, isDisplayed);
 }
 
 void TextAttribute::SetRightVerticalDisplayed(const bool isDisplayed) noexcept
 {
-    WI_UpdateFlag(_wAttrLegacy, COMMON_LVB_GRID_RVERTICAL, isDisplayed);
+    WI_UpdateFlag(_attrs, CharacterAttributes::RightGridline, isDisplayed);
 }
 
 bool TextAttribute::IsIntense() const noexcept
 {
-    return WI_IsFlagSet(_extendedAttrs, ExtendedAttributes::Intense);
+    return WI_IsFlagSet(_attrs, CharacterAttributes::Intense);
 }
 
 bool TextAttribute::IsFaint() const noexcept
 {
-    return WI_IsFlagSet(_extendedAttrs, ExtendedAttributes::Faint);
+    return WI_IsFlagSet(_attrs, CharacterAttributes::Faint);
 }
 
 bool TextAttribute::IsItalic() const noexcept
 {
-    return WI_IsFlagSet(_extendedAttrs, ExtendedAttributes::Italics);
+    return WI_IsFlagSet(_attrs, CharacterAttributes::Italics);
 }
 
 bool TextAttribute::IsBlinking() const noexcept
 {
-    return WI_IsFlagSet(_extendedAttrs, ExtendedAttributes::Blinking);
+    return WI_IsFlagSet(_attrs, CharacterAttributes::Blinking);
 }
 
 bool TextAttribute::IsInvisible() const noexcept
 {
-    return WI_IsFlagSet(_extendedAttrs, ExtendedAttributes::Invisible);
+    return WI_IsFlagSet(_attrs, CharacterAttributes::Invisible);
 }
 
 bool TextAttribute::IsCrossedOut() const noexcept
 {
-    return WI_IsFlagSet(_extendedAttrs, ExtendedAttributes::CrossedOut);
+    return WI_IsFlagSet(_attrs, CharacterAttributes::CrossedOut);
 }
 
+// Method description:
+// - Returns true if the text is underlined with any underline style.
 bool TextAttribute::IsUnderlined() const noexcept
 {
-    return WI_IsFlagSet(_extendedAttrs, ExtendedAttributes::Underlined);
-}
-
-bool TextAttribute::IsDoublyUnderlined() const noexcept
-{
-    return WI_IsFlagSet(_extendedAttrs, ExtendedAttributes::DoublyUnderlined);
+    const auto style = GetUnderlineStyle();
+    return (style != UnderlineStyle::NoUnderline);
 }
 
 bool TextAttribute::IsOverlined() const noexcept
 {
-    return WI_IsFlagSet(_wAttrLegacy, COMMON_LVB_GRID_HORIZONTAL);
+    return WI_IsFlagSet(_attrs, CharacterAttributes::TopGridline);
 }
 
 bool TextAttribute::IsReverseVideo() const noexcept
 {
-    return WI_IsFlagSet(_wAttrLegacy, COMMON_LVB_REVERSE_VIDEO);
+    return WI_IsFlagSet(_attrs, CharacterAttributes::ReverseVideo);
+}
+
+bool TextAttribute::IsProtected() const noexcept
+{
+    return WI_IsFlagSet(_attrs, CharacterAttributes::Protected);
 }
 
 void TextAttribute::SetIntense(bool isIntense) noexcept
 {
-    WI_UpdateFlag(_extendedAttrs, ExtendedAttributes::Intense, isIntense);
+    WI_UpdateFlag(_attrs, CharacterAttributes::Intense, isIntense);
 }
 
 void TextAttribute::SetFaint(bool isFaint) noexcept
 {
-    WI_UpdateFlag(_extendedAttrs, ExtendedAttributes::Faint, isFaint);
+    WI_UpdateFlag(_attrs, CharacterAttributes::Faint, isFaint);
 }
 
 void TextAttribute::SetItalic(bool isItalic) noexcept
 {
-    WI_UpdateFlag(_extendedAttrs, ExtendedAttributes::Italics, isItalic);
+    WI_UpdateFlag(_attrs, CharacterAttributes::Italics, isItalic);
 }
 
 void TextAttribute::SetBlinking(bool isBlinking) noexcept
 {
-    WI_UpdateFlag(_extendedAttrs, ExtendedAttributes::Blinking, isBlinking);
+    WI_UpdateFlag(_attrs, CharacterAttributes::Blinking, isBlinking);
 }
 
 void TextAttribute::SetInvisible(bool isInvisible) noexcept
 {
-    WI_UpdateFlag(_extendedAttrs, ExtendedAttributes::Invisible, isInvisible);
+    WI_UpdateFlag(_attrs, CharacterAttributes::Invisible, isInvisible);
 }
 
 void TextAttribute::SetCrossedOut(bool isCrossedOut) noexcept
 {
-    WI_UpdateFlag(_extendedAttrs, ExtendedAttributes::CrossedOut, isCrossedOut);
+    WI_UpdateFlag(_attrs, CharacterAttributes::CrossedOut, isCrossedOut);
 }
 
-void TextAttribute::SetUnderlined(bool isUnderlined) noexcept
+// Method description:
+// - Sets underline style to singly, doubly, or one of the extended styles.
+// Arguments:
+// - style - underline style to set.
+void TextAttribute::SetUnderlineStyle(const UnderlineStyle style) noexcept
 {
-    WI_UpdateFlag(_extendedAttrs, ExtendedAttributes::Underlined, isUnderlined);
-}
-
-void TextAttribute::SetDoublyUnderlined(bool isDoublyUnderlined) noexcept
-{
-    WI_UpdateFlag(_extendedAttrs, ExtendedAttributes::DoublyUnderlined, isDoublyUnderlined);
+    const auto shiftedStyle = WI_EnumValue(style) << UNDERLINE_STYLE_SHIFT;
+    _attrs = (_attrs & ~CharacterAttributes::UnderlineStyle) | static_cast<CharacterAttributes>(shiftedStyle);
 }
 
 void TextAttribute::SetOverlined(bool isOverlined) noexcept
 {
-    WI_UpdateFlag(_wAttrLegacy, COMMON_LVB_GRID_HORIZONTAL, isOverlined);
+    WI_UpdateFlag(_attrs, CharacterAttributes::TopGridline, isOverlined);
 }
 
 void TextAttribute::SetReverseVideo(bool isReversed) noexcept
 {
-    WI_UpdateFlag(_wAttrLegacy, COMMON_LVB_REVERSE_VIDEO, isReversed);
+    WI_UpdateFlag(_attrs, CharacterAttributes::ReverseVideo, isReversed);
+}
+
+void TextAttribute::SetProtected(bool isProtected) noexcept
+{
+    WI_UpdateFlag(_attrs, CharacterAttributes::Protected, isProtected);
 }
 
 // Routine Description:
 // - swaps foreground and background color
 void TextAttribute::Invert() noexcept
 {
-    WI_ToggleFlag(_wAttrLegacy, COMMON_LVB_REVERSE_VIDEO);
+    WI_ToggleFlag(_attrs, CharacterAttributes::ReverseVideo);
 }
 
 void TextAttribute::SetDefaultForeground() noexcept
@@ -374,12 +357,17 @@ void TextAttribute::SetDefaultBackground() noexcept
     _background = TextColor();
 }
 
-// Method description:
-// - Resets only the meta and extended attributes
-void TextAttribute::SetDefaultMetaAttrs() noexcept
+void TextAttribute::SetDefaultUnderlineColor() noexcept
 {
-    _extendedAttrs = ExtendedAttributes::Normal;
-    _wAttrLegacy = 0;
+    _underlineColor = TextColor{};
+}
+
+// Method description:
+// - Resets only the rendition character attributes, which includes everything
+//     except the Protected attribute.
+void TextAttribute::SetDefaultRenditionAttributes() noexcept
+{
+    _attrs &= ~CharacterAttributes::Rendition;
 }
 
 // Method Description:
@@ -398,10 +386,12 @@ bool TextAttribute::BackgroundIsDefault() const noexcept
 }
 
 // Routine Description:
-// - Resets the meta and extended attributes, which is what the VT standard
-//      requires for most erasing and filling operations.
+// - Resets the character attributes, which is what the VT standard
+//      requires for most erasing and filling operations. In modern
+//      applications it is also expected that hyperlinks are erased.
 void TextAttribute::SetStandardErase() noexcept
 {
-    SetDefaultMetaAttrs();
+    _attrs = CharacterAttributes::Normal;
     _hyperlinkId = 0;
+    _markKind = MarkKind::None;
 }

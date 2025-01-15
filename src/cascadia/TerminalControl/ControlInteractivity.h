@@ -44,8 +44,11 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         void Initialize();
         Control::ControlCore Core();
 
+        void Close();
+        void Detach();
+
         Control::InteractivityAutomationPeer OnCreateAutomationPeer();
-        ::Microsoft::Console::Types::IUiaData* GetUiaData() const;
+        ::Microsoft::Console::Render::IRenderData* GetRenderData() const;
 
 #pragma region Input Methods
         void PointerPressed(Control::MouseButtonState buttonState,
@@ -53,15 +56,15 @@ namespace winrt::Microsoft::Terminal::Control::implementation
                             const uint64_t timestamp,
                             const ::Microsoft::Terminal::Core::ControlKeyStates modifiers,
                             const Core::Point pixelPosition);
-        void TouchPressed(const Core::Point contactPoint);
+        void TouchPressed(const winrt::Windows::Foundation::Point contactPoint);
 
-        void PointerMoved(Control::MouseButtonState buttonState,
+        bool PointerMoved(Control::MouseButtonState buttonState,
                           const unsigned int pointerUpdateKind,
                           const ::Microsoft::Terminal::Core::ControlKeyStates modifiers,
                           const bool focused,
                           const Core::Point pixelPosition,
                           const bool pointerPressedInBounds);
-        void TouchMoved(const Core::Point newTouchPoint,
+        void TouchMoved(const winrt::Windows::Foundation::Point newTouchPoint,
                         const bool focused);
 
         void PointerReleased(Control::MouseButtonState buttonState,
@@ -75,19 +78,26 @@ namespace winrt::Microsoft::Terminal::Control::implementation
                         const Core::Point pixelPosition,
                         const Control::MouseButtonState state);
 
-        void UpdateScrollbar(const double newValue);
+        void UpdateScrollbar(const float newValue);
 
 #pragma endregion
 
         bool CopySelectionToClipboard(bool singleLine,
+                                      bool withControlSequences,
                                       const Windows::Foundation::IReference<CopyFormat>& formats);
         void RequestPasteTextFromClipboard();
         void SetEndSelectionPoint(const Core::Point pixelPosition);
-        bool ManglePathsForWsl();
 
-        TYPED_EVENT(OpenHyperlink, IInspectable, Control::OpenHyperlinkEventArgs);
-        TYPED_EVENT(PasteFromClipboard, IInspectable, Control::PasteFromClipboardEventArgs);
-        TYPED_EVENT(ScrollPositionChanged, IInspectable, Control::ScrollPositionChangedArgs);
+        uint64_t Id();
+        void AttachToNewControl(const Microsoft::Terminal::Control::IKeyBindings& keyBindings);
+
+        til::typed_event<IInspectable, Control::OpenHyperlinkEventArgs> OpenHyperlink;
+        til::typed_event<IInspectable, Control::PasteFromClipboardEventArgs> PasteFromClipboard;
+        til::typed_event<IInspectable, Control::ScrollPositionChangedArgs> ScrollPositionChanged;
+        til::typed_event<IInspectable, Control::ContextMenuRequestedEventArgs> ContextMenuRequested;
+
+        til::typed_event<IInspectable, IInspectable> Attached;
+        til::typed_event<IInspectable, IInspectable> Closed;
 
     private:
         // NOTE: _uiaEngine must be ordered before _core.
@@ -100,12 +110,12 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         std::unique_ptr<::Microsoft::Console::Render::UiaEngine> _uiaEngine;
 
         winrt::com_ptr<ControlCore> _core{ nullptr };
-        unsigned int _rowsToScroll;
-        double _internalScrollbarPosition{ 0.0 };
+        UINT _rowsToScroll = 3;
+        float _internalScrollbarPosition = 0;
 
         // If this is set, then we assume we are in the middle of panning the
         //      viewport via touch input.
-        std::optional<Core::Point> _touchAnchor;
+        std::optional<winrt::Windows::Foundation::Point> _touchAnchor;
 
         using Timestamp = uint64_t;
 
@@ -129,12 +139,15 @@ namespace winrt::Microsoft::Terminal::Control::implementation
 
         std::optional<interval_tree::IntervalTree<til::point, size_t>::interval> _lastHoveredInterval{ std::nullopt };
 
+        uint64_t _id;
+        static std::atomic<uint64_t> _nextId;
+
         unsigned int _numberOfClicks(Core::Point clickPos, Timestamp clickTime);
         void _updateSystemParameterSettings() noexcept;
 
-        void _mouseTransparencyHandler(const double mouseDelta);
-        void _mouseZoomHandler(const double mouseDelta);
-        void _mouseScrollHandler(const double mouseDelta,
+        void _mouseTransparencyHandler(const int32_t mouseDelta) const;
+        void _mouseZoomHandler(const int32_t mouseDelta) const;
+        void _mouseScrollHandler(const int32_t mouseDelta,
                                  const Core::Point terminalPosition,
                                  const bool isLeftButtonPressed);
 
@@ -142,7 +155,6 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         bool _canSendVTMouseInput(const ::Microsoft::Terminal::Core::ControlKeyStates modifiers);
         bool _shouldSendAlternateScroll(const ::Microsoft::Terminal::Core::ControlKeyStates modifiers, const int32_t delta);
 
-        void _sendPastedTextToConnection(std::wstring_view wstr);
         til::point _getTerminalPosition(const til::point pixelPosition);
 
         bool _sendMouseEventHelper(const til::point terminalPosition,

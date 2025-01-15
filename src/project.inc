@@ -3,14 +3,17 @@
 # - Common Project Configuration
 # -------------------------------------
 
-!include $(OSDEPENDSROOT)\OSS\gsl\3.1.0\consume.inc
+# Pull our dependencies from vcpkg. This includes gsl - if you run into errors
+# from a missing gsl, make sure you go build onecore/window/vcpkg first.
+
+!include $(PROJECT_ROOT)\vcpkg\consume.inc
 
 # -------------------------------------
 # Preprocessor Settings
 # -------------------------------------
 
 UNICODE                 = 1
-C_DEFINES               = $(C_DEFINES) -DUNICODE -D_UNICODE -DFMT_HEADER_ONLY -D__INSIDE_WINDOWS
+C_DEFINES               = $(C_DEFINES) -DUNICODE -D_UNICODE -DFMT_HEADER_ONLY -D__INSIDE_WINDOWS -DBUILD_ONECORE_INTERACTIVITY
 
 # -------------------------------------
 # CRT Configuration
@@ -32,7 +35,7 @@ USE_NATIVE_EH           = 1
 
 USE_STD_CPP20           = 1
 MSC_WARNING_LEVEL       = /W4 /WX
-USER_C_FLAGS            = $(USER_C_FLAGS) /fp:fast /utf-8
+USER_C_FLAGS            = $(USER_C_FLAGS) /Zc:preprocessor /fp:contract /utf-8
 
 # -------------------------------------
 # Common Console Includes and Libraries
@@ -46,8 +49,6 @@ INCLUDES= \
     $(INCLUDES); \
     $(CONSOLE_SRC_PATH)\inc; \
     $(CONSOLE_SRC_PATH)\..\..\inc; \
-    $(CONSOLE_SRC_PATH)\..\oss\dynamic_bitset; \
-    $(CONSOLE_SRC_PATH)\..\oss\libpopcnt; \
     $(CONSOLE_SRC_PATH)\..\oss\chromium; \
     $(CONSOLE_SRC_PATH)\..\oss\fmt\include; \
     $(CONSOLE_SRC_PATH)\..\oss\interval_tree; \

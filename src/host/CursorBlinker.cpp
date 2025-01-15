@@ -82,10 +82,8 @@ void CursorBlinker::TimerRoutine(SCREEN_INFORMATION& ScreenInfo) const noexcept
     auto& cursor = buffer.GetCursor();
     auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
     auto* const pAccessibilityNotifier = ServiceLocator::LocateAccessibilityNotifier();
-    const auto inConpty{ gci.IsInVtIoMode() };
 
-    // GH#2988: ConPTY can now be focused, but it doesn't need to do any of this work either.
-    if (inConpty || !WI_IsFlagSet(gci.Flags, CONSOLE_HAS_FOCUS))
+    if (!WI_IsFlagSet(gci.Flags, CONSOLE_HAS_FOCUS))
     {
         goto DoScroll;
     }
@@ -102,10 +100,10 @@ void CursorBlinker::TimerRoutine(SCREEN_INFORMATION& ScreenInfo) const noexcept
         cursor.SetHasMoved(false);
 
         til::rect rc;
-        rc.left = (position.X - viewport.Left()) * fontSize.X;
-        rc.top = (position.Y - viewport.Top()) * fontSize.Y;
-        rc.right = rc.left + fontSize.X;
-        rc.bottom = rc.top + fontSize.Y;
+        rc.left = (position.x - viewport.Left()) * fontSize.width;
+        rc.top = (position.y - viewport.Top()) * fontSize.height;
+        rc.right = rc.left + fontSize.width;
+        rc.bottom = rc.top + fontSize.height;
 
         pAccessibilityNotifier->NotifyConsoleCaretEvent(rc);
 
@@ -123,7 +121,7 @@ void CursorBlinker::TimerRoutine(SCREEN_INFORMATION& ScreenInfo) const noexcept
                 flags = IAccessibilityNotifier::ConsoleCaretEventFlags::CaretVisible;
             }
 
-            pAccessibilityNotifier->NotifyConsoleCaretEvent(flags, MAKELONG(position.X, position.Y));
+            pAccessibilityNotifier->NotifyConsoleCaretEvent(flags, MAKELONG(position.x, position.y));
         }
     }
 
@@ -165,6 +163,12 @@ DoScroll:
 //   guCaretBlinkTime is -1.
 void CursorBlinker::SetCaretTimer() const noexcept
 {
+    auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+    if (gci.IsInVtIoMode())
+    {
+        return;
+    }
+
     using filetime_duration = std::chrono::duration<int64_t, std::ratio<1, 10000000>>;
     static constexpr DWORD dwDefTimeout = 0x212;
 

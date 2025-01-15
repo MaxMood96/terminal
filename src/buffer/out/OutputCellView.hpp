@@ -25,6 +25,7 @@ Revision History:
 class OutputCellView
 {
 public:
+    OutputCellView() = default;
     OutputCellView(const std::wstring_view view,
                    const DbcsAttribute dbcsAttr,
                    const TextAttribute textAttr,
@@ -56,7 +57,7 @@ public:
 
 private:
     std::wstring_view _view;
-    DbcsAttribute _dbcsAttr;
+    DbcsAttribute _dbcsAttr = DbcsAttribute::Single;
     TextAttribute _textAttr;
     TextAttributeBehavior _behavior;
 };

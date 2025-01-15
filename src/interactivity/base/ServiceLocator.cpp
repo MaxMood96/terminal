@@ -3,6 +3,10 @@
 
 #include "precomp.h"
 
+// MidiAudio
+#include <mmeapi.h>
+#include <dsound.h>
+
 #include "../inc/ServiceLocator.hpp"
 
 #include "InteractivityFactory.hpp"
@@ -39,22 +43,28 @@ void ServiceLocator::SetOneCoreTeardownFunction(void (*pfn)()) noexcept
     s_oneCoreTeardownFunction = pfn;
 }
 
-[[noreturn]] void ServiceLocator::RundownAndExit(const HRESULT hr)
+void ServiceLocator::RundownAndExit(const HRESULT hr)
 {
+    // The TriggerTeardown() call below depends on the render thread being able to acquire the
+    // console lock, so that it can safely progress with flushing the last frame. Since there's no
+    // coming back from this function (it's [[noreturn]]), it's safe to unlock the console here.
+    auto& gci = s_globals.getConsoleInformation();
+    while (gci.IsConsoleLocked())
+    {
+        gci.UnlockConsole();
+    }
+
     // MSFT:40146639
     //   The premise of this function is that 1 thread enters and 0 threads leave alive.
     //   We need to prevent anyone from calling us until we actually ExitProcess(),
     //   so that we don't TriggerTeardown() twice. LockConsole() can't be used here,
     //   because doing so would prevent the render thread from progressing.
-    AcquireSRWLockExclusive(&s_shutdownLock);
-
-    // MSFT:15506250
-    // In VT I/O Mode, a client application might die before we've rendered
-    //      the last bit of text they've emitted. So give the VtRenderer one
-    //      last chance to paint before it is killed.
-    if (s_globals.pRender)
+    static std::atomic<bool> locked;
+    if (locked.exchange(true, std::memory_order_relaxed))
     {
-        s_globals.pRender->TriggerTeardown();
+        // If we reach this point, another thread is already in the process of exiting.
+        // There's a lot of ways to suspend ourselves until we exit, one of which is "sleep forever".
+        Sleep(INFINITE);
     }
 
     // MSFT:40226902 - HOTFIX shutdown on OneCore, by leaking the renderer, thereby
@@ -119,11 +129,11 @@ void ServiceLocator::SetOneCoreTeardownFunction(void (*pfn)()) noexcept
         {
             status = ServiceLocator::LoadInteractivityFactory();
         }
-        if (NT_SUCCESS(status))
+        if (SUCCEEDED_NTSTATUS(status))
         {
             status = s_interactivityFactory->CreateConsoleInputThread(s_consoleInputThread);
 
-            if (NT_SUCCESS(status))
+            if (SUCCEEDED_NTSTATUS(status))
             {
                 *thread = s_consoleInputThread.get();
             }
@@ -213,7 +223,7 @@ IConsoleControl* ServiceLocator::LocateConsoleControl()
             status = ServiceLocator::LoadInteractivityFactory();
         }
 
-        if (NT_SUCCESS(status))
+        if (SUCCEEDED_NTSTATUS(status))
         {
             status = s_interactivityFactory->CreateConsoleControl(s_consoleControl);
         }
@@ -240,7 +250,7 @@ IHighDpiApi* ServiceLocator::LocateHighDpiApi()
             status = ServiceLocator::LoadInteractivityFactory();
         }
 
-        if (NT_SUCCESS(status))
+        if (SUCCEEDED_NTSTATUS(status))
         {
             status = s_interactivityFactory->CreateHighDpiApi(s_highDpiApi);
         }
@@ -262,7 +272,7 @@ IWindowMetrics* ServiceLocator::LocateWindowMetrics()
             status = ServiceLocator::LoadInteractivityFactory();
         }
 
-        if (NT_SUCCESS(status))
+        if (SUCCEEDED_NTSTATUS(status))
         {
             status = s_interactivityFactory->CreateWindowMetrics(s_windowMetrics);
         }
@@ -289,7 +299,7 @@ ISystemConfigurationProvider* ServiceLocator::LocateSystemConfigurationProvider(
             status = ServiceLocator::LoadInteractivityFactory();
         }
 
-        if (NT_SUCCESS(status))
+        if (SUCCEEDED_NTSTATUS(status))
         {
             status = s_interactivityFactory->CreateSystemConfigurationProvider(s_systemConfigurationProvider);
         }
@@ -312,7 +322,7 @@ Globals& ServiceLocator::LocateGlobals()
 //   owner of the pseudo window.
 // Return Value:
 // - a reference to the pseudoconsole window.
-HWND ServiceLocator::LocatePseudoWindow(const HWND owner)
+HWND ServiceLocator::LocatePseudoWindow()
 {
     auto status = STATUS_SUCCESS;
     if (!s_pseudoWindowInitialized)
@@ -322,10 +332,10 @@ HWND ServiceLocator::LocatePseudoWindow(const HWND owner)
             status = ServiceLocator::LoadInteractivityFactory();
         }
 
-        if (NT_SUCCESS(status))
+        if (SUCCEEDED_NTSTATUS(status))
         {
             HWND hwnd;
-            status = s_interactivityFactory->CreatePseudoWindow(hwnd, owner);
+            status = s_interactivityFactory->CreatePseudoWindow(hwnd);
             s_pseudoWindow.reset(hwnd);
         }
 
@@ -333,6 +343,38 @@ HWND ServiceLocator::LocatePseudoWindow(const HWND owner)
     }
     LOG_IF_NTSTATUS_FAILED(status);
     return s_pseudoWindow.get();
+}
+
+void ServiceLocator::SetPseudoWindowOwner(HWND owner)
+{
+    auto status = STATUS_SUCCESS;
+    if (!s_interactivityFactory)
+    {
+        status = ServiceLocator::LoadInteractivityFactory();
+    }
+
+    if (s_interactivityFactory)
+    {
+        static_cast<InteractivityFactory*>(s_interactivityFactory.get())->SetOwner(owner);
+    }
+
+    LOG_IF_NTSTATUS_FAILED(status);
+}
+
+void ServiceLocator::SetPseudoWindowVisibility(bool showOrHide)
+{
+    auto status = STATUS_SUCCESS;
+    if (!s_interactivityFactory)
+    {
+        status = ServiceLocator::LoadInteractivityFactory();
+    }
+
+    if (s_interactivityFactory)
+    {
+        static_cast<InteractivityFactory*>(s_interactivityFactory.get())->SetVisibility(showOrHide);
+    }
+
+    LOG_IF_NTSTATUS_FAILED(status);
 }
 
 #pragma endregion

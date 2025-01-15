@@ -5,24 +5,17 @@
 
 #include "IoDispatchers.h"
 
-#include "ApiSorter.h"
+#include <telemetry/ProjectTelemetry.h>
 
-#include "../host/conserv.h"
-#include "../host/conwinuserrefs.h"
+#include "ApiSorter.h"
+#include "IConsoleHandoff.h"
 #include "../host/directio.h"
 #include "../host/handle.h"
 #include "../host/srvinit.h"
-#include "../host/telemetry.hpp"
-
 #include "../interactivity/base/HostSignalInputThread.hpp"
 #include "../interactivity/inc/ServiceLocator.hpp"
 
-#include "../types/inc/utils.hpp"
-
-#include "IConsoleHandoff.h"
-
 using namespace Microsoft::Console::Interactivity;
-using namespace Microsoft::Console::Utils;
 
 // From ntstatus.h, which we cannot include without causing a bunch of other conflicts. So we just include the one code we need.
 //
@@ -90,7 +83,7 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleCreateObject(_In_ PCONSOLE_API_MSG pMessa
         Status = STATUS_INVALID_PARAMETER;
     }
 
-    if (!NT_SUCCESS(Status))
+    if (FAILED_NTSTATUS(Status))
     {
         UnlockConsole();
         pMessage->SetReplyStatus(Status);
@@ -177,12 +170,6 @@ static bool _shouldAttemptHandoff(const Globals& globals,
     return false;
 
 #else
-
-    // If we do not have a registered handoff, do not attempt.
-    if (!globals.delegationPair.IsCustom())
-    {
-        return false;
-    }
 
     // If we're already a target for receiving another handoff,
     // do not chain.
@@ -271,8 +258,31 @@ static bool _shouldAttemptHandoff(const Globals& globals,
 
 static void attemptHandoff(Globals& Globals, const CONSOLE_INFORMATION& gci, CONSOLE_API_CONNECTINFO& cac, PCONSOLE_API_MSG pReceiveMsg)
 {
-    if (!_shouldAttemptHandoff(Globals, gci, cac))
+    // _shouldAttemptHandoff does not check if there is a handoff target.
+    // this lets us break apart the check for logging purposes.
+    const bool shouldAttemptHandoff = _shouldAttemptHandoff(Globals, gci, cac);
+    if (!shouldAttemptHandoff)
     {
+        // Non-interactive session, don't hand it off; emit no log
+        return;
+    }
+
+    // This session is interactive on the right desktop and window station
+
+    const bool hasHandoffTarget = Globals.delegationPair.IsCustom();
+    const bool handoffTargetChosenByWindows = Globals.defaultTerminalMarkerCheckRequired;
+
+    TraceLoggingWrite(g_hConhostV2EventTraceProvider,
+                      "ConsoleHandoffSessionStarted",
+                      TraceLoggingDescription("a new interactive console session was started"),
+                      TraceLoggingGuid(Globals.delegationPair.console, "handoffCLSID"),
+                      TraceLoggingBool(handoffTargetChosenByWindows, "handoffTargetChosenByWindows"),
+                      TraceLoggingKeyword(MICROSOFT_KEYWORD_MEASURES),
+                      TelemetryPrivacyDataTag(PDT_ProductAndServiceUsage));
+
+    if (!hasHandoffTarget)
+    {
+        // Nobody to hand off to. We emitted the log, so we're done here.
         return;
     }
 
@@ -396,7 +406,6 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
 {
     auto& Globals = ServiceLocator::LocateGlobals();
     auto& gci = Globals.getConsoleInformation();
-    Telemetry::Instance().LogApiCall(Telemetry::ApiCall::AttachConsole);
 
     ConsoleProcessHandle* ProcessData = nullptr;
     NTSTATUS Status;
@@ -404,7 +413,7 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
     LockConsole();
 
     const auto cleanup = wil::scope_exit([&]() noexcept {
-        if (!NT_SUCCESS(Status))
+        if (FAILED_NTSTATUS(Status))
         {
             pReceiveMsg->SetReplyStatus(Status);
             if (ProcessData != nullptr)
@@ -423,7 +432,7 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
 
     CONSOLE_API_CONNECTINFO Cac;
     Status = ConsoleInitializeConnectInfo(pReceiveMsg, &Cac);
-    if (!NT_SUCCESS(Status))
+    if (FAILED_NTSTATUS(Status))
     {
         return pReceiveMsg;
     }
@@ -435,10 +444,9 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
     Status = NTSTATUS_FROM_HRESULT(gci.ProcessHandleList.AllocProcessData(dwProcessId,
                                                                           dwThreadId,
                                                                           Cac.ProcessGroupId,
-                                                                          nullptr,
                                                                           &ProcessData));
 
-    if (!NT_SUCCESS(Status))
+    if (FAILED_NTSTATUS(Status))
     {
         return pReceiveMsg;
     }
@@ -460,7 +468,7 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
     if (WI_IsFlagClear(gci.Flags, CONSOLE_INITIALIZED))
     {
         Status = ConsoleAllocateConsole(&Cac);
-        if (!NT_SUCCESS(Status))
+        if (FAILED_NTSTATUS(Status))
         {
             return pReceiveMsg;
         }
@@ -502,7 +510,7 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
                                                                       FILE_SHARE_READ | FILE_SHARE_WRITE,
                                                                       ProcessData->pInputHandle));
 
-    if (!NT_SUCCESS(Status))
+    if (FAILED_NTSTATUS(Status))
     {
         return pReceiveMsg;
     }
@@ -513,7 +521,7 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
                                                                FILE_SHARE_READ | FILE_SHARE_WRITE,
                                                                ProcessData->pOutputHandle));
 
-    if (!NT_SUCCESS(Status))
+    if (FAILED_NTSTATUS(Status))
     {
         return pReceiveMsg;
     }
@@ -546,8 +554,6 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
 // - A pointer to the reply message.
 PCONSOLE_API_MSG IoDispatchers::ConsoleClientDisconnectRoutine(_In_ PCONSOLE_API_MSG pMessage)
 {
-    Telemetry::Instance().LogApiCall(Telemetry::ApiCall::FreeConsole);
-
     const auto pProcessData = pMessage->GetProcessHandle();
 
     auto pNotifier = ServiceLocator::LocateAccessibilityNotifier();

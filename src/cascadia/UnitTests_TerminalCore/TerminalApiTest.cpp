@@ -48,7 +48,7 @@ using namespace TerminalCoreUnitTests;
 
 void TerminalApiTest::SetColorTableEntry()
 {
-    Terminal term;
+    Terminal term{ Terminal::TestDummyMarker{} };
     DummyRenderer renderer{ &term };
     term.Create({ 100, 100 }, 0, renderer);
 
@@ -67,7 +67,7 @@ void TerminalApiTest::SetColorTableEntry()
 // PrintString() is called with more code units than the buffer width.
 void TerminalApiTest::PrintStringOfSurrogatePairs()
 {
-    Terminal term;
+    Terminal term{ Terminal::TestDummyMarker{} };
     DummyRenderer renderer{ &term };
     term.Create({ 100, 100 }, 3, renderer);
 
@@ -97,7 +97,7 @@ void TerminalApiTest::PrintStringOfSurrogatePairs()
         [](LPVOID data) -> DWORD {
             const auto& baton = *reinterpret_cast<Baton*>(data);
             Log::Comment(L"Writing data.");
-            baton.pTerm->PrintString(baton.text);
+            baton.pTerm->_stateMachine->ProcessString(baton.text);
             Log::Comment(L"Setting event.");
             SetEvent(baton.done);
             return 0;
@@ -134,7 +134,7 @@ void TerminalApiTest::PrintStringOfSurrogatePairs()
 void TerminalApiTest::CursorVisibility()
 {
     // GH#3093 - Cursor Visibility and On states shouldn't affect each other
-    Terminal term;
+    Terminal term{ Terminal::TestDummyMarker{} };
     DummyRenderer renderer{ &term };
     term.Create({ 100, 100 }, 0, renderer);
 
@@ -152,7 +152,8 @@ void TerminalApiTest::CursorVisibility()
     VERIFY_IS_TRUE(term._mainBuffer->GetCursor().IsOn());
     VERIFY_IS_TRUE(term._mainBuffer->GetCursor().IsBlinkingAllowed());
 
-    term.GetTextBuffer().GetCursor().SetIsVisible(false);
+    auto& textBuffer = term.GetBufferAndViewport().buffer;
+    textBuffer.GetCursor().SetIsVisible(false);
     VERIFY_IS_FALSE(term._mainBuffer->GetCursor().IsVisible());
     VERIFY_IS_TRUE(term._mainBuffer->GetCursor().IsOn());
     VERIFY_IS_TRUE(term._mainBuffer->GetCursor().IsBlinkingAllowed());
@@ -166,7 +167,7 @@ void TerminalApiTest::CursorVisibility()
 void TerminalApiTest::CursorVisibilityViaStateMachine()
 {
     // This is a nearly literal copy-paste of ScreenBufferTests::TestCursorIsOn, adapted for the Terminal
-    Terminal term;
+    Terminal term{ Terminal::TestDummyMarker{} };
     DummyRenderer renderer{ &term };
     term.Create({ 100, 100 }, 0, renderer);
 
@@ -218,7 +219,7 @@ void TerminalApiTest::CursorVisibilityViaStateMachine()
 
 void TerminalApiTest::CheckDoubleWidthCursor()
 {
-    Terminal term;
+    Terminal term{ Terminal::TestDummyMarker{} };
     DummyRenderer renderer{ &term };
     term.Create({ 100, 100 }, 0, renderer);
 
@@ -235,7 +236,7 @@ void TerminalApiTest::CheckDoubleWidthCursor()
         singleWidthText.append(L"A");
     }
     stateMachine.ProcessString(singleWidthText);
-    VERIFY_IS_TRUE(cursor.GetPosition().X == 98);
+    VERIFY_IS_TRUE(cursor.GetPosition().x == 98);
 
     // Stuff two double width characters.
     std::wstring doubleWidthText{ L"我愛" };
@@ -262,7 +263,7 @@ void TerminalCoreUnitTests::TerminalApiTest::AddHyperlink()
 {
     // This is a nearly literal copy-paste of ScreenBufferTests::TestAddHyperlink, adapted for the Terminal
 
-    Terminal term;
+    Terminal term{ Terminal::TestDummyMarker{} };
     DummyRenderer renderer{ &term };
     term.Create({ 100, 100 }, 0, renderer);
 
@@ -288,7 +289,7 @@ void TerminalCoreUnitTests::TerminalApiTest::AddHyperlinkCustomId()
 {
     // This is a nearly literal copy-paste of ScreenBufferTests::TestAddHyperlinkCustomId, adapted for the Terminal
 
-    Terminal term;
+    Terminal term{ Terminal::TestDummyMarker{} };
     DummyRenderer renderer{ &term };
     term.Create({ 100, 100 }, 0, renderer);
 
@@ -316,7 +317,7 @@ void TerminalCoreUnitTests::TerminalApiTest::AddHyperlinkCustomIdDifferentUri()
 {
     // This is a nearly literal copy-paste of ScreenBufferTests::TestAddHyperlinkCustomId, adapted for the Terminal
 
-    Terminal term;
+    Terminal term{ Terminal::TestDummyMarker{} };
     DummyRenderer renderer{ &term };
     term.Create({ 100, 100 }, 0, renderer);
 
@@ -344,7 +345,7 @@ void TerminalCoreUnitTests::TerminalApiTest::AddHyperlinkCustomIdDifferentUri()
 
 void TerminalCoreUnitTests::TerminalApiTest::SetTaskbarProgress()
 {
-    Terminal term;
+    Terminal term{ Terminal::TestDummyMarker{} };
     DummyRenderer renderer{ &term };
     term.Create({ 100, 100 }, 0, renderer);
 
@@ -415,7 +416,7 @@ void TerminalCoreUnitTests::TerminalApiTest::SetTaskbarProgress()
 
 void TerminalCoreUnitTests::TerminalApiTest::SetWorkingDirectory()
 {
-    Terminal term;
+    Terminal term{ Terminal::TestDummyMarker{} };
     DummyRenderer renderer{ &term };
     term.Create({ 100, 100 }, 0, renderer);
 
@@ -433,6 +434,27 @@ void TerminalCoreUnitTests::TerminalApiTest::SetWorkingDirectory()
     VERIFY_IS_TRUE(term.GetWorkingDirectory().empty());
 
     stateMachine.ProcessString(L"\x1b]9;9\"C:\\\"\x1b\\");
+    VERIFY_IS_TRUE(term.GetWorkingDirectory().empty());
+
+    stateMachine.ProcessString(L"\x1b"
+                               LR"(]9;9;"C:\invalid path "with" quotes")"
+                               L"\x1b\\");
+    VERIFY_IS_TRUE(term.GetWorkingDirectory().empty());
+
+    // These OSC 9;9 sequences will result in invalid CWD. It should end up empty, like above.
+    stateMachine.ProcessString(L"\x1b]9;9;\"\x1b\\");
+    VERIFY_IS_TRUE(term.GetWorkingDirectory().empty());
+
+    stateMachine.ProcessString(L"\x1b]9;9;\"\"\x1b\\");
+    VERIFY_IS_TRUE(term.GetWorkingDirectory().empty());
+
+    stateMachine.ProcessString(L"\x1b]9;9;\"\"\"\x1b\\");
+    VERIFY_IS_TRUE(term.GetWorkingDirectory().empty());
+
+    stateMachine.ProcessString(L"\x1b]9;9;\"\"\"\"\x1b\\");
+    VERIFY_IS_TRUE(term.GetWorkingDirectory().empty());
+
+    stateMachine.ProcessString(L"\x1b]9;9;No quotes \"until\" later\x1b\\");
     VERIFY_IS_TRUE(term.GetWorkingDirectory().empty());
 
     // Valid sequences should change CWD
@@ -454,17 +476,4 @@ void TerminalCoreUnitTests::TerminalApiTest::SetWorkingDirectory()
 
     stateMachine.ProcessString(L"\x1b]9;9;D:\\中文\x1b\\");
     VERIFY_ARE_EQUAL(term.GetWorkingDirectory(), L"D:\\中文");
-
-    // These OSC 9;9 sequences will result in invalid CWD. We shouldn't crash on these.
-    stateMachine.ProcessString(L"\x1b]9;9;\"\x1b\\");
-    VERIFY_ARE_EQUAL(term.GetWorkingDirectory(), L"\"");
-
-    stateMachine.ProcessString(L"\x1b]9;9;\"\"\x1b\\");
-    VERIFY_ARE_EQUAL(term.GetWorkingDirectory(), L"\"\"");
-
-    stateMachine.ProcessString(L"\x1b]9;9;\"\"\"\x1b\\");
-    VERIFY_ARE_EQUAL(term.GetWorkingDirectory(), L"\"");
-
-    stateMachine.ProcessString(L"\x1b]9;9;\"\"\"\"\x1b\\");
-    VERIFY_ARE_EQUAL(term.GetWorkingDirectory(), L"\"\"");
 }
